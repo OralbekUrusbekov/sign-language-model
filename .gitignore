@@ -1,0 +1,68 @@
+# Python
+**pycache**/
+*.py[cod]
+*.so
+
+sign-language-recognition.sqlite
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# macOS
+.DS_Store
+
+# VSCode / IDE
+
+.vscode/
+.idea/
+
+# Flask
+instance/
+.webassets-cache/
+
+# Environment variables
+.env
+
+# Logs
+*.log
+
+# Database
+*.db
+*.sqlite3
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Model files
+app/model/*.h5
+app/model/*.keras
+app/model/*.pkl
+
+# Dataset
+app/dataset/
+
+# MediaPipe cache
+*.tflite
+
+# Uploaded files
+uploads/
+
+# Temporary files
+tmp/
+temp/
+
+# Build files
+dist/
+build/
+
+# Coverage
+.coverage
+htmlcov/
+
+# pytest
+.pytest_cache/
+
+# mypy
+.mypy_cache/

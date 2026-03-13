@@ -1,0 +1,126 @@
+{% extends 'base.html' %}
+{% block content %}
+<header>
+    <h1 class="text-white">Video Recorder</h1>
+    <p class="text-white">Create Dataset for Word Level</p>
+</header>
+<!-- Alert area for notifications -->
+<div id="alert-area"></div>
+<div class="row">
+    <!-- Left column: Camera Stream -->
+    <div class="col-md-6">
+        <p>Camera:</p>
+        <video id="preview" autoplay muted playsinline class="w-100"></video>
+        <!-- Start Stop buttons -->
+        <div class="mb-3">
+            <button id="startRecordingBtn" class="btn btn-outline-success me-2">Start Recording</button>
+            <button id="stopRecordingBtn" class="btn btn-outline-danger" disabled>Stop Recording</button>
+        </div>
+    </div>
+    <!-- Video Preview -->
+    <div class="col-md-6" id="previewVideoContainer">
+        <div class="mb-3">
+            <video id="previewVideo" class="w-100" controls style="display: none;">
+                <source id="videoSource" src="" type="video/mp4">
+                Your browser does not support the video tag.
+            </video>
+        </div>
+
+        <div class="row g-2 my-2">
+            <div class="col">
+                <label for="dataset_label" class="form-label">Label</label>
+                <input type="text" id="labelInput" placeholder="Enter word tag" class="form-control" />
+            </div>
+            <div id="progressContainer" style="display: none; flex-grow: 1;">
+                <label for="progressBar" class="form-label">Landmark Extraction Progress</label>
+                <div class="progress">
+                    <div id="progressBar" class="progress-bar progress-bar-striped progress-bar-animated"
+                        role="progressbar" style="width: 0%;">
+                        0%
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+</div>
+
+<!-- Latest Videos Gallery -->
+<div class="mt-4">
+    <div class="d-flex justify-content-between align-items-center">
+        <header class="text-white">
+            <h2>Latest Videos</h2>
+        </header>
+        <!-- Navigation buttons -->
+        <div>
+            <button id="prevBtn" class="btn btn-outline-light rounded-circle btn-lg">
+                <i class='bx bx-chevron-left'></i>
+            </button>
+            <button id="nextBtn" class="btn btn-outline-light rounded-circle btn-lg">
+                <i class='bx bx-chevron-right'></i>
+            </button>
+        </div>
+    </div>
+    <div class="d-flex flex-row overflow-auto gallery-container" style="scroll-behavior: smooth;">
+        {% for video in videos[-10:] %}
+        <div class="card me-3 video-card" style="min-width: 300px; max-width: 300px;">
+            <video class="card-img-top" controls style="height: 200px; object-fit: cover;">
+                <source src="{{ video.url }}" type="video/mp4">
+                Your browser does not support HTML5 video.
+            </video>
+            <div class="card-body">
+                <h5 class="card-title">{{ video.label }}</h5>
+                <p class="card-text">{{ video.filename }}</p>
+                <a href="#" class="btn btn-danger" onclick="deleteVideo('{{ video.id }}')">Delete</a>
+                <a href="{{ video.url }}" class="btn btn-primary">Download</a>
+                <a href="#" class="btn btn-secondary"
+                    onclick="openEditModal('{{ video.id }}', '{{ video.url }}', '{{ video.label }}')">
+                    Edit
+                </a>
+            </div>
+        </div>
+        {% else %}
+        <p class="text-white">No videos found.</p>
+        {% endfor %}
+    </div>
+</div>
+
+<!-- Modal for confirmation -->
+<div class="modal fade" id="previewModal" tabindex="-1" aria-labelledby="previewModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-centered">
+        <div class="modal-content bg-dark text-white">
+            <div class="modal-header">
+                <h5 class="modal-title" id="previewModalLabel">Recorded Preview & Segment Selection</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <video id="modalVideo" class="w-100 mb-3" controls></video>
+                <div class="row g-2 mb-3">
+                    <div class="col">
+                        <label for="modalStartTime" class="form-label">Start Time (s)</label>
+                        <input type="number" id="modalStartTime" class="form-control" step="0.1" min="0">
+                    </div>
+                    <div class="col">
+                        <label for="modalEndTime" class="form-label">End Time (s)</label>
+                        <input type="number" id="modalEndTime" class="form-control" step="0.1" min="0">
+                    </div>
+                </div>
+                <div class="form-check form-switch mb-3">
+                    <input class="form-check-input" type="checkbox" id="modalMirrorSwitch" checked>
+                    <label class="form-check-label" for="modalMirrorSwitch">Enable Mirror Augmentation</label>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button id="modalExtractBtn" type="button" class="btn btn-success">Extract</button>
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% endblock %}
+{% block extra_scripts %}
+<script src="{{ url_for('static', filename='js/recorder.js') }}"></script>
+<script src="{{ url_for('static', filename='js/script.js') }}"></script>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.2.0/dist/js/bootstrap.bundle.min.js"></script>
+{% endblock %}

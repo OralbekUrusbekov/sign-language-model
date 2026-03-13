@@ -1,0 +1,34 @@
+{% extends 'base.html' %}
+{% block content %}
+<h1>Video Gallery</h1>
+<div class="container">
+  <div class="row">
+    {% for video in videos %}
+    <div class="col-md-4 mb-3">
+      <div class="card me-3" style="max-width: 350px;">
+        <video class="card-img-top" controls style="max-height: 200px;">
+          <source src="{{ video.url }}" type="video/mp4">
+          Your browser does not support HTML5 video.
+        </video>
+        <div class="card-body">
+          <h5 class="card-title">{{ video.label }}</h5>
+          <p class="card-text">{{ video.filename }}</p>
+          <a href="#" class="btn btn-danger" onclick="deleteVideo('{{ video.id }}')">Delete</a>
+          <a href="{{ video.url }}" class="btn btn-primary">Download</a>
+          <a href="#" class="btn btn-secondary" onclick="openEditModal('{{ video.id }}', '{{ video.url }}', '{{ video.label }}')">Edit</a>
+        </div>
+      </div>
+    </div>
+    {% else %}
+      <p>No videos found.</p>
+    {% endfor %}
+  </div>
+</div>
+
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="{{ url_for('static', filename='js/recorder.js') }}"></script>
+<script src="{{ url_for('static', filename='js/script.js') }}"></script>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.2.0/dist/js/bootstrap.bundle.min.js"></script>
+{% endblock %}
