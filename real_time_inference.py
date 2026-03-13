@@ -29,6 +29,8 @@ class RealTimeSignLanguageRecognizer:
             feature_order_path="app/model/feature_order.json",
             cam_id=0,
     ):
+        self.CAM_ID = cam_id
+        
         # Load model and preprocessing tools
         print("Loading model and preprocessing tools...")
 

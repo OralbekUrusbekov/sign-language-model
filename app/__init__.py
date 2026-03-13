@@ -7,6 +7,7 @@ from app.celery_utils import make_celery
 celery = make_celery()
 
 
+
 # Flask app instance
 def create_app():
     app = Flask(__name__)
@@ -33,6 +34,9 @@ def create_app():
         from app import routes, models, forms
 
     return app
+
+
+
 
 
 db = SQLAlchemy()

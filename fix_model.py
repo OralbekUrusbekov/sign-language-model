@@ -1,58 +1,61 @@
-# fix_model.py
+# create_model_99.py
 import tensorflow as tf
 import numpy as np
 import joblib
-import json
 
-print("Модельді қайта құру...")
+print("🔄 Creating new model for 99 features...")
 
 
-# 1. Модель архитектурасын анықтау
-def create_model(input_shape=(5, 18), num_classes=11):
+# Модель архитектурасы (99 features үшін)
+def create_model_99(input_shape=(5, 99), num_classes=11):
     model = tf.keras.Sequential([
         tf.keras.layers.Input(shape=input_shape, name='input_layer'),
 
         # LSTM layers
         tf.keras.layers.LSTM(128, return_sequences=True, name='lstm_1'),
-        tf.keras.layers.Dropout(0.3, name='dropout'),
-        tf.keras.layers.BatchNormalization(name='batch_normalization'),
+        tf.keras.layers.Dropout(0.3, name='dropout_1'),
+        tf.keras.layers.BatchNormalization(name='bn_1'),
 
         tf.keras.layers.LSTM(64, return_sequences=False, name='lstm_2'),
-        tf.keras.layers.Dropout(0.3, name='dropout_1'),
-        tf.keras.layers.BatchNormalization(name='batch_normalization_1'),
+        tf.keras.layers.Dropout(0.3, name='dropout_2'),
+        tf.keras.layers.BatchNormalization(name='bn_2'),
 
         # Dense layers
-        tf.keras.layers.Dense(64, activation='relu', name='dense'),
-        tf.keras.layers.Dropout(0.3, name='dropout_2'),
-        tf.keras.layers.Dense(num_classes, activation='softmax', name='dense_1')
+        tf.keras.layers.Dense(64, activation='relu', name='dense_1'),
+        tf.keras.layers.Dropout(0.3, name='dropout_3'),
+        tf.keras.layers.Dense(32, activation='relu', name='dense_2'),
+        tf.keras.layers.Dropout(0.2, name='dropout_4'),
+
+        # Output layer
+        tf.keras.layers.Dense(num_classes, activation='softmax', name='output')
     ])
 
     return model
 
 
-# 2. Жаңа модель құру
-new_model = create_model()
+# Модель құру
+model = create_model_99()
 
-# 3. Модельді компиляциялау
-new_model.compile(
-    optimizer=tf.keras.optimizers.Adam(learning_rate=0.0001),
+# Модельді компиляциялау
+model.compile(
+    optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
     loss='categorical_crossentropy',
     metrics=['accuracy']
 )
 
-# 4. Модель архитектурасын көрсету
-print("\nЖаңа модель архитектурасы:")
-new_model.summary()
+print("\n📊 Model architecture:")
+model.summary()
 
-# 5. Модельді сақтау
-new_model.save('app/model/sign_language_recognition_fixed.keras')
-new_model.save('app/model/sign_language_recognition.h5', save_format='h5')
-print("\n✓ Модель сақталды!")
+# Модельді сақтау
+model.save('app/model/sign_language_recognition_fixed.keras')
+model.save('app/model/sign_language_recognition.h5', save_format='h5')
+print("\n✓ Model saved!")
 
-# 6. Сақталған модельді тексеру
+# Тестілеу
 try:
-    test_input = np.random.randn(1, 5, 18)
-    output = new_model.predict(test_input)
-    print(f"✓ Модель дұрыс жұмыс істейді! Шығыс формасы: {output.shape}")
+    test_input = np.random.randn(1, 5, 99)
+    output = model.predict(test_input)
+    print(f"✓ Model test passed! Output shape: {output.shape}")
+    print(f"✓ Model expects: {model.input_shape}")
 except Exception as e:
-    print(f"✗ Модельді тестілеу қатесі: {e}")
+    print(f"✗ Model test failed: {e}")

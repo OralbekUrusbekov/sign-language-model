@@ -19,7 +19,96 @@ from app.models import Video, FrameLandmark  # DB Models
 from app.tasks import process_video_landmarks, celery
 from app.config import VIDEO_DIR
 from app.utils.real_time_recognition import get_recognizer
+import numpy as np
 
+
+@app.route('/predict_frame', methods=['POST'])
+def predict_frame():
+    """React Native-тен келген бір кадрды өңдеу - 99 FEATURES"""
+    print("\n" + "=" * 50)
+    print("🔵 PREDICT_FRAME called (99 features)")
+
+    try:
+        if 'frame' not in request.files:
+            return jsonify({'error': 'No frame provided'}), 400
+
+        file = request.files['frame']
+        img_bytes = file.read()
+        nparr = np.frombuffer(img_bytes, np.uint8)
+        frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+        if frame is None:
+            return jsonify({'error': 'Invalid image'}), 400
+
+        recognizer = get_recognizer()
+
+        # БАРЛЫҚ landmark-тарды экстракциялау
+        landmarks, hands_results, pose_results = recognizer.extract_landmarks_from_frame(frame)
+
+        # Буферге қосу
+        recognizer.frame_buffer.append(landmarks)
+
+        frame_buffer_len = len(recognizer.frame_buffer)
+        feature_buffer_len = len(recognizer.feature_buffer)
+
+        print(f"📊 Frame buffer: {frame_buffer_len}/{recognizer.window_size}")
+        print(f"📊 Feature buffer: {feature_buffer_len}/{recognizer.sequence_length}")
+
+        response_data = {
+            'status': 'waiting',
+            'message': f'Collecting frames... ({frame_buffer_len}/{recognizer.window_size})',
+            'frame_buffer': frame_buffer_len,
+            'feature_buffer': feature_buffer_len,
+            'landmarks': landmarks
+        }
+
+        # Егер терезе толса, 99 feature экстракциясы
+        from collections import deque
+
+        if len(recognizer.frame_buffer) >= recognizer.window_size:
+            print("✅ Window full! Extracting 99 features...")
+
+            frames_to_process = list(recognizer.frame_buffer)
+            features = recognizer.extract_window_features(frames_to_process)
+
+            recognizer.feature_buffer.append(features)
+
+            recognizer.frame_buffer = deque(
+                list(recognizer.frame_buffer)[-(recognizer.window_size - 1):],
+                maxlen=recognizer.window_size
+            )
+
+            if len(recognizer.feature_buffer) > recognizer.sequence_length:
+                recognizer.feature_buffer = recognizer.feature_buffer[-recognizer.sequence_length:]
+
+            feature_buffer_len = len(recognizer.feature_buffer)
+
+            print(f"📊 Feature buffer after: {feature_buffer_len}/{recognizer.sequence_length}")
+
+            response_data['message'] = f'Features extracted ({feature_buffer_len}/{recognizer.sequence_length})'
+        # Егер жеткілікті терезе болса (5), болжау
+        if len(recognizer.feature_buffer) >= recognizer.sequence_length:
+            print(f"✅ Predicting with 5 windows of 99 features...")
+            predicted_label, top3 = recognizer.predict()
+
+            if predicted_label:
+                response_data = {
+                    'status': 'success',
+                    'current_prediction': predicted_label,
+                    'top3': [{'label': l, 'confidence': float(c)} for l, c in top3],
+                    'feature_count': 99,
+                    'windows': len(recognizer.feature_buffer),
+                    'landmarks': landmarks
+                }
+                print(f"🎯 Prediction: {predicted_label}")
+
+        return jsonify(response_data)
+
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'status': 'error', 'message': str(e)}), 500
 
 @app.route("/")
 def index():
@@ -45,6 +134,81 @@ def generate_frames():
         frame_bytes = buffer.tobytes()
         yield (b'--frame\r\n'
                b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+
+
+
+@app.route('/cameras', methods=['GET'])
+def list_cameras():
+    """Қолжетімді камералар тізімін қайтару"""
+    recognizer = get_recognizer()
+    cameras = recognizer.get_available_cameras()
+    return jsonify({
+        'status': 'success',
+        'cameras': cameras,
+        'current_camera': recognizer.CAM_ID
+    })
+
+
+@app.route('/camera/set', methods=['POST'])
+def set_camera():
+    """Камера индексін өзгерту"""
+    data = request.get_json() or {}
+    cam_id = data.get('cam_id')
+
+    if cam_id is None:
+        return jsonify({'status': 'error', 'message': 'cam_id required'}), 400
+
+    recognizer = get_recognizer()
+
+    # Егер тану жұмыс істеп тұрса, тоқтату
+    was_running = recognizer.is_running
+    if was_running:
+        recognizer.stop_capture()
+
+    # Камераны өзгерту
+    success = recognizer.set_camera_index(cam_id)
+
+    if not success:
+        return jsonify({
+            'status': 'error',
+            'message': f'Camera {cam_id} is not available'
+        }), 400
+
+    # Егер бұрын жұмыс істеп тұрса, қайта бастау
+    if was_running:
+        recognizer.start_capture()
+
+    return jsonify({
+        'status': 'success',
+        'cam_id': cam_id,
+        'message': f'Camera set to index {cam_id}'
+    })
+
+
+@app.route('/camera/test/<int:cam_id>', methods=['GET'])
+def test_camera(cam_id):
+    """Бір камераны тексеру"""
+    cap = cv2.VideoCapture(cam_id)
+    if not cap.isOpened():
+        return jsonify({
+            'status': 'error',
+            'message': f'Camera {cam_id} cannot be opened'
+        })
+
+    ret, frame = cap.read()
+    cap.release()
+
+    if ret and frame is not None:
+        return jsonify({
+            'status': 'success',
+            'cam_id': cam_id,
+            'frame_size': frame.shape
+        })
+    else:
+        return jsonify({
+            'status': 'error',
+            'message': f'Camera {cam_id} opened but cannot read frame'
+        })
 
 
 @app.route('/video_feed')
