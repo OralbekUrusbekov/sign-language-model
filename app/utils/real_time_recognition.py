@@ -25,10 +25,11 @@ class RealTimeSignLanguageRecognizer:
             feature_order_path="app/model/feature_order.json",
             cam_id=None,
     ):
-        print("Initializing RealTimeSignLanguageRecognizer with 99 FEATURES...")
+        print("Initializing RealTimeSignLanguageRecognizer with 297 FEATURES...")
 
         # Модель файлын тексеру
         self.model_available = os.path.exists(model_path)
+        self.prediction_history = deque(maxlen=5)
 
         if self.model_available:
             try:
@@ -50,8 +51,8 @@ class RealTimeSignLanguageRecognizer:
             self.scaler = joblib.load(scaler_path) if os.path.exists(scaler_path) else None
             if self.scaler:
                 print(f"✓ Scaler loaded: expects {self.scaler.n_features_in_} features")
-                if self.scaler.n_features_in_ != 99:
-                    print(f"⚠ WARNING: Scaler expects {self.scaler.n_features_in_}, but we use 99 features")
+                if self.scaler.n_features_in_ != 297:
+                    print(f"⚠ WARNING: Scaler expects {self.scaler.n_features_in_}, but we use 297 features")
         except Exception as e:
             print(f"✗ Scaler load error: {e}")
             self.scaler = None
@@ -73,10 +74,10 @@ class RealTimeSignLanguageRecognizer:
                 print(f"📊 Loaded feature order with {len(self.feature_order)} features")
             except Exception as e:
                 print(f"✗ Feature order load error: {e}")
-                self.feature_order = [f"f_{i}" for i in range(99)]
+                self.feature_order = [f"f_{i}" for i in range(297)]
         else:
-            self.feature_order = [f"f_{i}" for i in range(99)]
-            print(f"📊 Created default feature order with 99 features")
+            self.feature_order = [f"f_{i}" for i in range(297)]
+            print(f"📊 Created default feature order with 198 features")
 
         # MediaPipe setup
         self.mp_hands = mp.solutions.hands
@@ -94,7 +95,7 @@ class RealTimeSignLanguageRecognizer:
         self.fps = 15
         self.window_sec = 0.2
 
-        self.window_size = 3
+        self.window_size = 5
         self.sequence_length = 5
 
 
@@ -171,15 +172,17 @@ class RealTimeSignLanguageRecognizer:
             self.hands = self.mp_hands.Hands(
                 static_image_mode=False,
                 max_num_hands=2,
-                min_detection_confidence=0.5,
-                min_tracking_confidence=0.5,
+                min_detection_confidence=0.35,
+               min_tracking_confidence = 0.35
             )
+
+
 
         if self.pose is None:
             self.pose = self.mp_pose.Pose(
                 static_image_mode=False,
-                min_detection_confidence=0.5,
-                min_tracking_confidence=0.5,
+                min_detection_confidence=0.35,
+                min_tracking_confidence = 0.35
             )
 
     def _cleanup_mediapipe(self):
@@ -221,6 +224,7 @@ class RealTimeSignLanguageRecognizer:
             self._init_mediapipe()
             self.frame_buffer.clear()
             self.feature_buffer.clear()
+            self.prediction_history.clear()
             self.is_running = True
             print(f"✓ Camera {self.CAM_ID} started successfully")
             return True
@@ -287,45 +291,9 @@ class RealTimeSignLanguageRecognizer:
 
         return landmarks, hands_results, pose_results
 
-    def extract_window_features(self, window_landmarks):
-        """
-        Extract 99 features from a window of landmarks:
-        - 33 pose landmarks × 3 coordinates = 99 features
-        - Each feature is the MEAN value across the window
-        """
-        print(f"📊 Extracting 99 features from {len(window_landmarks)} frames")
-
-        # Initialize arrays for pose landmarks
-        pose_coords = {i: {"x": [], "y": [], "z": []} for i in range(33)}
-
-        # Collect all pose landmarks from all frames
-        for frame_idx, frame_landmarks in enumerate(window_landmarks):
-            for lm_idx, lm in enumerate(frame_landmarks["pose"]):
-                if lm_idx < 33:  # Safety check
-                    pose_coords[lm_idx]["x"].append(lm["x"])
-                    pose_coords[lm_idx]["y"].append(lm["y"])
-                    pose_coords[lm_idx]["z"].append(lm["z"])
-
-        # Calculate mean for each pose landmark coordinate
-        features = []
-        for i in range(33):
-            for axis in ["x", "y", "z"]:
-                if pose_coords[i][axis]:
-                    # Mean value across the window
-                    mean_val = float(np.mean(pose_coords[i][axis]))
-                    features.append(mean_val)
-                else:
-                    # If landmark not detected, use 0.0
-                    features.append(0.0)
-
-        # Verify we have exactly 99 features
-        feature_array = np.array(features[:99])
-        print(f"✅ Final 99 feature shape: {feature_array.shape}")
-
-        return feature_array
 
     def predict(self):
-        """Make prediction with 99 features"""
+        """Make prediction with 297 features"""
         if not self.model_available or self.model is None:
             return None, None
 
@@ -333,31 +301,25 @@ class RealTimeSignLanguageRecognizer:
             return None, None
 
         try:
-            # Feature buffer-дан массив құру (5, 99)
             X = np.array(list(self.feature_buffer))
             print(f"📊 Feature buffer shape: {X.shape}")
 
-            # LSTM үшін reshape: (1, sequence_length, features)
-            X = X.reshape(1, self.sequence_length, 99)
+            X = X.reshape(1, self.sequence_length, 297)
             print(f"📊 Reshaped for model: {X.shape}")
 
-            # Scale features (егер scaler бар болса)
             if self.scaler:
-                # Reshape to 2D for scaler: (5, 99) -> (5, 99)
-                X_reshaped = X.reshape(-1, 99)
+                X_reshaped = X.reshape(-1, 297)
                 print(f"📊 Scaling features...")
 
                 X_scaled = self.scaler.transform(X_reshaped)
-                X = X_scaled.reshape(1, self.sequence_length, 99)
+                X = X_scaled.reshape(1, self.sequence_length, 297)
                 print(f"📊 After scaling: {X.shape}")
             else:
                 print("⚠️ No scaler available, using raw features")
 
-            # Predict
             predictions = self.model.predict(X, verbose=0)[0]
             print(f"✅ Prediction shape: {predictions.shape}")
 
-            # Get top 3 predictions
             top3_indices = np.argsort(predictions)[-3:][::-1]
 
             if self.label_encoder:
@@ -366,9 +328,31 @@ class RealTimeSignLanguageRecognizer:
                 top3_labels = [f"class_{i}" for i in top3_indices]
 
             top3_confidences = predictions[top3_indices]
-            predicted_label = top3_labels[0]
 
-            print(f"🎯 Predicted: {predicted_label} ({top3_confidences[0] * 100:.1f}%)")
+            # confidence threshold
+            if top3_confidences[0] < 0.12:
+                predicted_label = None
+            else:
+                predicted_label = top3_labels[0]
+
+                self.prediction_history.append(predicted_label)
+
+                if len(self.prediction_history) == 5:
+                    predicted_label = max(
+                        set(self.prediction_history),
+                        key=self.prediction_history.count
+                    )
+
+            latest = self.feature_buffer[-1]
+
+            for i in range(min(20, len(self.feature_order))):
+                print(self.feature_order[i], latest[i])
+
+            if predicted_label:
+                print(f"🎯 Predicted: {predicted_label} ({top3_confidences[0] * 100:.1f}%)")
+            else:
+                print(f"⚠ Low confidence: {top3_confidences[0] * 100:.1f}%")
+
             return predicted_label, list(zip(top3_labels, top3_confidences * 100))
 
         except Exception as e:
@@ -376,6 +360,60 @@ class RealTimeSignLanguageRecognizer:
             import traceback
             traceback.print_exc()
             return None, None
+
+    def extract_window_features(self, frames):
+        """
+        frames: 5 landmark windows
+        output: 297 features
+        33 landmarks × 3 axis × (current + std + delta)
+        """
+
+        result = []
+
+        for i in range(33):
+
+            for axis in ['x', 'y', 'z']:
+                vals = []
+
+                for frame in frames:
+
+                    if i < len(frame["pose"]):
+                        landmark = frame["pose"][i]
+
+                        if axis in landmark:
+                            value = landmark[axis]
+
+                            # z clamp
+                            if axis == 'z':
+                                value = max(min(value, 1.0), -1.0)
+
+                            vals.append(value)
+                        else:
+                            vals.append(0.0)
+                    else:
+                        vals.append(0.0)
+
+                current_val = vals[-1] * 0.5
+
+                std_val = min(np.std(vals) * 3, 0.2)
+
+                if len(vals) >= 2:
+                    delta = (vals[-1] - vals[-2]) * 5
+                    delta = max(min(delta, 0.2), -0.2)
+                else:
+                    delta = 0.0
+
+                if axis == 'z':
+                    current_val *= 0.1
+                    std_val *= 0.1
+                    delta *= 0.1
+
+                result.append(current_val)
+                result.append(std_val)
+                result.append(delta)
+
+        return np.array(result)
+
 
     def draw_landmarks(self, frame, hands_results, pose_results):
         """Draw MediaPipe landmarks on frame"""
@@ -413,7 +451,7 @@ class RealTimeSignLanguageRecognizer:
         return frame
 
     def get_frame(self):
-        """Get a single processed frame for streaming"""
+        """Get a single processed frame for streaming only"""
         if not self.is_running:
             placeholder = np.zeros((480, 640, 3), dtype=np.uint8)
             cv2.putText(
@@ -445,83 +483,19 @@ class RealTimeSignLanguageRecognizer:
         if not ret:
             return None
 
-        # Extract ALL landmarks
+        # landmarks only for drawing
         landmarks, hands_results, pose_results = self.extract_landmarks_from_frame(frame)
 
-        # Add to buffer
-        self.frame_buffer.append(landmarks)
-
-        # Extract 99 features when window is full
-        if len(self.frame_buffer) == self.window_size:
-            features = self.extract_window_features(list(self.frame_buffer))
-            self.feature_buffer.append(features)
-            self.frame_buffer.clear()
-            print(f"📊 Feature buffer: {len(self.feature_buffer)}/{self.sequence_length}")
-
-        # Make prediction
-        predicted_label, top3 = self.predict()
-
-        # Update current predictions
-        with self.lock:
-            self.current_prediction = predicted_label
-            self.top3_predictions = top3
-
-        # Draw landmarks
+        # draw only
         frame = self.draw_landmarks(frame, hands_results, pose_results)
 
-        # Display prediction on frame
-        if predicted_label:
-            cv2.putText(
-                frame,
-                f"Prediction: {predicted_label}",
-                (10, 30),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                1,
-                (0, 255, 0),
-                2,
-            )
-
-            # Top 3 predictions
-            y_offset = 60
-            for i, (label, conf) in enumerate(top3):
-                text = f"{i + 1}. {label}: {conf:.1f}%"
-                cv2.putText(
-                    frame,
-                    text,
-                    (10, y_offset + i * 25),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.6,
-                    (255, 255, 255),
-                    1,
-                )
-
-            # Show feature count
-            cv2.putText(
-                frame,
-                "99 Features",
-                (540, 60),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
-                (255, 255, 0),
-                1,
-            )
-        else:
-            cv2.putText(
-                frame,
-                f"Collecting frames... ({len(self.feature_buffer)}/{self.sequence_length})",
-                (10, 30),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                1,
-                (0, 0, 255),
-                2,
-            )
-
-        # Calculate and display FPS
+        # FPS display
         self.frame_count += 1
         if self.frame_count % 30 == 0:
             current_time = cv2.getTickCount()
             fps = 30 / ((current_time - self.fps_timer) / cv2.getTickFrequency())
             self.fps_timer = current_time
+
             cv2.putText(
                 frame,
                 f"FPS: {fps:.1f}",
@@ -533,6 +507,7 @@ class RealTimeSignLanguageRecognizer:
             )
 
         return frame
+
 
     def get_current_predictions(self):
         """Get current predictions thread-safely"""
@@ -550,7 +525,7 @@ def get_recognizer():
     if recognizer is None:
         try:
             recognizer = RealTimeSignLanguageRecognizer()
-            print("✓ Recognizer created successfully with 99 features!")
+            print("✓ Recognizer created successfully with 297 features!")
         except Exception as e:
             print(f"✗ Error creating recognizer: {e}")
             import traceback

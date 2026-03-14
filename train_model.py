@@ -8,6 +8,7 @@ from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense, Dropout, BatchNormalization
 from tensorflow.keras.utils import to_categorical
 from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
+from tensorflow.keras.optimizers import Adam
 
 # -----------------------------
 # PATHS
@@ -60,15 +61,18 @@ def load_dataset(root_dir, sequence_length=5):
 
                 # Create sequences of sequence_length
                 # Use overlapping windows for more data
-                for i in range(0, n_frames - sequence_length + 1):
-                    sequence = data[i:i + sequence_length]  # (5, 99)
+                for i in range(0, n_frames - sequence_length + 1, 2):
+                    sequence = data[i:i + sequence_length]
+                    sequence = enhance_sequence(sequence)  # (5, 99)
                     X.append(sequence)
                     y.append(cls)
 
             elif len(data.shape) == 1 and data.shape[0] == 99:
                 # Shape: (99,) - single frame
                 # Duplicate to create sequence (data augmentation)
-                sequence = np.array([data] * sequence_length)  # (5, 99)
+                sequence = np.array([data] * sequence_length)
+                sequence = enhance_sequence(sequence)
+
                 X.append(sequence)
                 y.append(cls)
 
@@ -79,6 +83,34 @@ def load_dataset(root_dir, sequence_length=5):
     print(f"\n📊 Total sequences: {len(X)}")
     return np.array(X), np.array(y), classes
 
+
+def enhance_sequence(sequence):
+    result = []
+
+    for t in range(sequence.shape[0]):
+        frame_features = []
+
+        for i in range(33):
+            for axis in range(3):
+                idx = i * 3 + axis
+
+                vals = sequence[:, idx]
+
+                current_val = sequence[t, idx]
+                std_val = np.std(vals)
+
+                if t == 0:
+                    delta = 0.0
+                else:
+                    delta = sequence[t, idx] - sequence[t - 1, idx]
+
+                frame_features.append(current_val)
+                frame_features.append(std_val)
+                frame_features.append(delta)
+
+        result.append(frame_features)
+
+    return np.array(result)
 
 print("=" * 60)
 print("📊 LOADING TRAIN DATA...")
@@ -187,7 +219,15 @@ print("\n" + "=" * 60)
 print("📋 FEATURE ORDER")
 print("=" * 60)
 
-feature_order = [f"pose_{i}_{axis}" for i in range(33) for axis in ['x', 'y', 'z']]
+feature_order = []
+
+for i in range(33):
+    for axis in ['x', 'y', 'z']:
+        feature_order.append(f"pose_{i}_{axis}")
+        feature_order.append(f"pose_{i}_{axis}_std")
+        feature_order.append(f"pose_{i}_{axis}_delta")
+
+
 print(f"✅ Feature order: {len(feature_order)} features")
 
 with open(os.path.join(MODEL_DIR, "feature_order.json"), "w") as f:
@@ -224,37 +264,20 @@ print("🧠 MODEL ARCHITECTURE")
 print("=" * 60)
 
 model = Sequential([
-    # First LSTM layer with regularization
-    LSTM(128,
-         return_sequences=True,
-         input_shape=(seq_len, n_features),
-         kernel_regularizer='l2',
-         recurrent_regularizer='l2',
-         name='lstm_1'),
-    Dropout(0.5, name='dropout_1'),
-    BatchNormalization(name='bn_1'),
+    LSTM(128, return_sequences=True, input_shape=(seq_len, n_features)),
+    Dropout(0.3),
 
-    # Second LSTM layer
-    LSTM(64,
-         return_sequences=False,
-         kernel_regularizer='l2',
-         recurrent_regularizer='l2',
-         name='lstm_2'),
-    Dropout(0.5, name='dropout_2'),
-    BatchNormalization(name='bn_2'),
+    LSTM(64),
+    Dropout(0.3),
 
-    # Dense layers
-    Dense(64, activation='relu', kernel_regularizer='l2', name='dense_1'),
-    Dropout(0.5, name='dropout_3'),
+    Dense(64, activation='relu'),
+    Dense(32, activation='relu'),
 
-    Dense(32, activation='relu', kernel_regularizer='l2', name='dense_2'),
-
-    # Output layer
-    Dense(num_classes, activation='softmax', name='output')
+    Dense(num_classes, activation='softmax')
 ])
 
 model.compile(
-    optimizer='adam',
+    optimizer=Adam(learning_rate=0.0005),
     loss='categorical_crossentropy',
     metrics=['accuracy']
 )
@@ -304,7 +327,7 @@ history = model.fit(
     validation_data=validation_data,
     validation_split=validation_split,
     epochs=100,
-    batch_size=32,
+    batch_size=16,
     callbacks=callbacks,
     verbose=1
 )

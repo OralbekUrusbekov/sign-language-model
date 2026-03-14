@@ -24,9 +24,9 @@ import numpy as np
 
 @app.route('/predict_frame', methods=['POST'])
 def predict_frame():
-    """React Native-тен келген бір кадрды өңдеу - 99 FEATURES"""
+    """React Native-тен келген бір кадрды өңдеу - 297 FEATURES"""
     print("\n" + "=" * 50)
-    print("🔵 PREDICT_FRAME called (99 features)")
+    print("🔵 PREDICT_FRAME called (297 features)")
 
     try:
         if 'frame' not in request.files:
@@ -42,10 +42,15 @@ def predict_frame():
 
         recognizer = get_recognizer()
 
-        # БАРЛЫҚ landmark-тарды экстракциялау
         landmarks, hands_results, pose_results = recognizer.extract_landmarks_from_frame(frame)
 
-        # Буферге қосу
+        # no pose detected → skip
+        if len(landmarks["pose"]) == 0:
+            return jsonify({
+                'status': 'no_landmarks',
+                'message': 'No pose detected'
+            })
+
         recognizer.frame_buffer.append(landmarks)
 
         frame_buffer_len = len(recognizer.frame_buffer)
@@ -59,14 +64,12 @@ def predict_frame():
             'message': f'Collecting frames... ({frame_buffer_len}/{recognizer.window_size})',
             'frame_buffer': frame_buffer_len,
             'feature_buffer': feature_buffer_len,
-            'landmarks': landmarks
         }
 
-        # Егер терезе толса, 99 feature экстракциясы
         from collections import deque
 
-        if len(recognizer.frame_buffer) >= recognizer.window_size:
-            print("✅ Window full! Extracting 99 features...")
+        if frame_buffer_len >= recognizer.window_size:
+            print("✅ Window full! Extracting 297 features...")
 
             frames_to_process = list(recognizer.frame_buffer)
             features = recognizer.extract_window_features(frames_to_process)
@@ -74,33 +77,53 @@ def predict_frame():
             recognizer.feature_buffer.append(features)
 
             recognizer.frame_buffer = deque(
-                list(recognizer.frame_buffer)[-(recognizer.window_size - 1):],
+                list(recognizer.frame_buffer)[-4:],
                 maxlen=recognizer.window_size
             )
 
-            if len(recognizer.feature_buffer) > recognizer.sequence_length:
-                recognizer.feature_buffer = recognizer.feature_buffer[-recognizer.sequence_length:]
+            recognizer.feature_buffer = deque(
+                list(recognizer.feature_buffer)[-recognizer.sequence_length:],
+                maxlen=recognizer.sequence_length
+            )
 
             feature_buffer_len = len(recognizer.feature_buffer)
 
             print(f"📊 Feature buffer after: {feature_buffer_len}/{recognizer.sequence_length}")
 
             response_data['message'] = f'Features extracted ({feature_buffer_len}/{recognizer.sequence_length})'
-        # Егер жеткілікті терезе болса (5), болжау
+
         if len(recognizer.feature_buffer) >= recognizer.sequence_length:
-            print(f"✅ Predicting with 5 windows of 99 features...")
+            print("✅ Predicting with 5 windows of 297 features...")
+
             predicted_label, top3 = recognizer.predict()
 
-            if predicted_label:
+            if predicted_label is not None:
                 response_data = {
                     'status': 'success',
                     'current_prediction': predicted_label,
-                    'top3': [{'label': l, 'confidence': float(c)} for l, c in top3],
-                    'feature_count': 99,
+                    'top3': [
+                        {'label': l, 'confidence': float(c)}
+                        for l, c in top3
+                    ] if top3 else [],
+                    'feature_count': 297,
                     'windows': len(recognizer.feature_buffer),
-                    'landmarks': landmarks
                 }
+
                 print(f"🎯 Prediction: {predicted_label}")
+
+            else:
+                response_data = {
+                    'status': 'low_confidence',
+                    'message': 'Low confidence',
+                    'top3': [
+                        {'label': l, 'confidence': float(c)}
+                        for l, c in top3
+                    ] if top3 else [],
+                    'feature_count': 297,
+                    'windows': len(recognizer.feature_buffer),
+                }
+
+                print("⚠ Low confidence returned to frontend")
 
         return jsonify(response_data)
 
@@ -108,7 +131,10 @@ def predict_frame():
         print(f"❌ Error: {e}")
         import traceback
         traceback.print_exc()
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+        return jsonify({
+            'status': 'error',
+            'message': str(e)
+        }), 500
 
 @app.route("/")
 def index():
