@@ -24,108 +24,125 @@ import numpy as np
 
 @app.route('/predict_frame', methods=['POST'])
 def predict_frame():
-    """React Native-тен келген бір кадрды өңдеу - 297 FEATURES"""
-    print("\n" + "=" * 50)
-    print("🔵 PREDICT_FRAME called (297 features)")
+    """React Native-тен келген бір кадрды өңдеу"""
+    print("\n" + "=" * 60)
+    print("🔵 PREDICT_FRAME called")
+    print("=" * 60)
 
     try:
-        if 'frame' not in request.files:
-            return jsonify({'error': 'No frame provided'}), 400
+        # === ФАЙЛДЫ АЛУ ===
+        if 'image' in request.files:
+            file = request.files['image']
+            print("✅ Using 'image' field")
+        elif 'frame' in request.files:
+            file = request.files['frame']
+            print("✅ Using 'frame' field")
+        else:
+            print(f"❌ No file found. Keys: {list(request.files.keys())}")
+            return jsonify({
+                'status': 'error',
+                'message': 'No image or frame provided'
+            }), 400
 
-        file = request.files['frame']
+        # Файлды оқу
         img_bytes = file.read()
         nparr = np.frombuffer(img_bytes, np.uint8)
         frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
         if frame is None:
-            return jsonify({'error': 'Invalid image'}), 400
+            return jsonify({'status': 'error', 'message': 'Invalid image'}), 400
 
+        # Recognizer алу
         recognizer = get_recognizer()
+        if recognizer is None:
+            return jsonify({'status': 'error', 'message': 'Recognizer not initialized'}), 500
 
+        # Landmarkтарды алу
         landmarks, hands_results, pose_results = recognizer.extract_landmarks_from_frame(frame)
 
-        # no pose detected → skip
+        # Pose бар ма?
         if len(landmarks["pose"]) == 0:
+            print("⚠ No pose detected")
             return jsonify({
-                'status': 'no_landmarks',
-                'message': 'No pose detected'
+                'status': 'waiting',
+                'message': 'No pose detected',
+                'current_prediction': None,
+                'top3': []
             })
 
+        # Frame буферіне қосу
         recognizer.frame_buffer.append(landmarks)
 
-        frame_buffer_len = len(recognizer.frame_buffer)
-        feature_buffer_len = len(recognizer.feature_buffer)
+        # Егер window толық болса, feature алу
+        if len(recognizer.frame_buffer) >= recognizer.window_size:
+            print(f"✅ Window full ({recognizer.window_size} frames)! Extracting features...")
 
-        print(f"📊 Frame buffer: {frame_buffer_len}/{recognizer.window_size}")
-        print(f"📊 Feature buffer: {feature_buffer_len}/{recognizer.sequence_length}")
-
-        response_data = {
-            'status': 'waiting',
-            'message': f'Collecting frames... ({frame_buffer_len}/{recognizer.window_size})',
-            'frame_buffer': frame_buffer_len,
-            'feature_buffer': feature_buffer_len,
-        }
-
-        from collections import deque
-
-        if frame_buffer_len >= recognizer.window_size:
-            print("✅ Window full! Extracting 297 features...")
-
-            frames_to_process = list(recognizer.frame_buffer)
+            frames_to_process = list(recognizer.frame_buffer)[-recognizer.window_size:]
             features = recognizer.extract_window_features(frames_to_process)
 
             recognizer.feature_buffer.append(features)
+            print(f"📊 Feature buffer: {len(recognizer.feature_buffer)}/{recognizer.sequence_length}")
 
+            # Frame буферін тазалау
+            from collections import deque
             recognizer.frame_buffer = deque(
-                list(recognizer.frame_buffer)[-4:],
+                list(recognizer.frame_buffer)[-1:],  # Соңғы 1 кадрды сақтау
                 maxlen=recognizer.window_size
             )
 
-            recognizer.feature_buffer = deque(
-                list(recognizer.feature_buffer)[-recognizer.sequence_length:],
-                maxlen=recognizer.sequence_length
-            )
+        # Буфер статусы
+        frame_buffer_len = len(recognizer.frame_buffer)
+        feature_buffer_len = len(recognizer.feature_buffer)
 
-            feature_buffer_len = len(recognizer.feature_buffer)
-
-            print(f"📊 Feature buffer after: {feature_buffer_len}/{recognizer.sequence_length}")
-
-            response_data['message'] = f'Features extracted ({feature_buffer_len}/{recognizer.sequence_length})'
-
-        if len(recognizer.feature_buffer) >= recognizer.sequence_length:
-            print("✅ Predicting with 5 windows of 297 features...")
+        # Егер sequence толық болса, предикция жасау
+        if feature_buffer_len >= recognizer.sequence_length:
+            print(f"✅ Sequence full! Predicting with {feature_buffer_len} windows...")
 
             predicted_label, top3 = recognizer.predict()
 
             if predicted_label is not None:
-                response_data = {
-                    'status': 'success',
-                    'current_prediction': predicted_label,
-                    'top3': [
-                        {'label': l, 'confidence': float(c)}
-                        for l, c in top3
-                    ] if top3 else [],
-                    'feature_count': 297,
-                    'windows': len(recognizer.feature_buffer),
-                }
-
                 print(f"🎯 Prediction: {predicted_label}")
 
-            else:
-                response_data = {
-                    'status': 'low_confidence',
-                    'message': 'Low confidence',
-                    'top3': [
-                        {'label': l, 'confidence': float(c)}
-                        for l, c in top3
-                    ] if top3 else [],
-                    'feature_count': 297,
-                    'windows': len(recognizer.feature_buffer),
+                # Landmarkтарды дайындау
+                serializable_landmarks = {
+                    'hand_0': [{'x': p.get('x', 0), 'y': p.get('y', 0)} for p in landmarks.get('hand_0', [])],
+                    'hand_1': [{'x': p.get('x', 0), 'y': p.get('y', 0)} for p in landmarks.get('hand_1', [])],
+                    'hand_labels': landmarks.get('hand_labels', []),
+                    'pose': [{'x': p.get('x', 0), 'y': p.get('y', 0)} for p in landmarks.get('pose', [])[:17]]
                 }
 
-                print("⚠ Low confidence returned to frontend")
+                return jsonify({
+                    'status': 'success',
+                    'current_prediction': predicted_label,
+                    'top3': [{'label': l, 'confidence': float(c)} for l, c in top3] if top3 else [],
+                    'landmarks': serializable_landmarks,
+                    'frame_buffer': frame_buffer_len,
+                    'feature_buffer': feature_buffer_len,
+                })
 
-        return jsonify(response_data)
+            else:
+                # Төмен confidence
+                return jsonify({
+                    'status': 'low_confidence',
+                    'current_prediction': None,
+                    'top3': [{'label': l, 'confidence': float(c)} for l, c in top3] if top3 else [],
+                    'message': 'Low confidence prediction'
+                })
+
+        # Әлі жинап жатсақ
+        total_frames = frame_buffer_len + (feature_buffer_len * recognizer.window_size)
+        needed_frames = recognizer.window_size * recognizer.sequence_length
+
+        return jsonify({
+            'status': 'waiting',
+            'message': f'Collecting: {feature_buffer_len}/{recognizer.sequence_length} windows',
+            'frame_buffer': frame_buffer_len,
+            'feature_buffer': feature_buffer_len,
+            'total_frames': total_frames,
+            'needed_frames': needed_frames,
+            'current_prediction': None,
+            'top3': []
+        })
 
     except Exception as e:
         print(f"❌ Error: {e}")
@@ -133,7 +150,9 @@ def predict_frame():
         traceback.print_exc()
         return jsonify({
             'status': 'error',
-            'message': str(e)
+            'message': str(e),
+            'current_prediction': None,
+            'top3': []
         }), 500
 
 @app.route("/")
