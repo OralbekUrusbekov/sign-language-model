@@ -24,9 +24,9 @@ import numpy as np
 
 @app.route('/predict_frame', methods=['POST'])
 def predict_frame():
-    """React Native-тен келген бір кадрды өңдеу"""
+    """FIXED: React Native-тен келген бір кадрды өңдеу"""
     print("\n" + "=" * 60)
-    print("🔵 PREDICT_FRAME called")
+    print("🔵 PREDICT_FRAME called - FIXED VERSION")
     print("=" * 60)
 
     try:
@@ -70,76 +70,59 @@ def predict_frame():
                 'top3': []
             })
 
-        # Frame буферіне қосу
-        recognizer.frame_buffer.append(landmarks)
+        # FIXED: EXTRACT RAW FEATURES DIRECTLY
+        features = recognizer.extract_raw_features(landmarks)
+        recognizer.feature_buffer.append(features)
 
-        # Егер window толық болса, feature алу
-        if len(recognizer.frame_buffer) >= recognizer.window_size:
-            print(f"✅ Window full ({recognizer.window_size} frames)! Extracting features...")
+        # Buffer status
+        buffer_len = len(recognizer.feature_buffer)
 
-            frames_to_process = list(recognizer.frame_buffer)[-recognizer.window_size:]
-            features = recognizer.extract_window_features(frames_to_process)
-
-            recognizer.feature_buffer.append(features)
-            print(f"📊 Feature buffer: {len(recognizer.feature_buffer)}/{recognizer.sequence_length}")
-
-            # Frame буферін тазалау
-            from collections import deque
-            recognizer.frame_buffer = deque(
-                list(recognizer.frame_buffer)[-1:],  # Соңғы 1 кадрды сақтау
-                maxlen=recognizer.window_size
-            )
-
-        # Буфер статусы
-        frame_buffer_len = len(recognizer.frame_buffer)
-        feature_buffer_len = len(recognizer.feature_buffer)
-
-        # Егер sequence толық болса, предикция жасау
-        if feature_buffer_len >= recognizer.sequence_length:
-            print(f"✅ Sequence full! Predicting with {feature_buffer_len} windows...")
+        # FIXED: Predict when buffer is full
+        if buffer_len >= recognizer.sequence_length:
+            print(f"✅ Buffer full! Predicting with {buffer_len} frames...")
 
             predicted_label, top3 = recognizer.predict()
 
-            if predicted_label is not None:
-                print(f"🎯 Prediction: {predicted_label}")
+            # Landmarkтарды дайындау (React Native үшін)
+            serializable_landmarks = {
+                'hand_0': [{'x': p.get('x', 0), 'y': p.get('y', 0)} for p in landmarks.get('hand_0', [])],
+                'hand_1': [{'x': p.get('x', 0), 'y': p.get('y', 0)} for p in landmarks.get('hand_1', [])],
+                'hand_labels': landmarks.get('hand_labels', []),
+                'pose': [{'x': p.get('x', 0), 'y': p.get('y', 0)} for p in landmarks.get('pose', [])[:17]]
+            }
 
-                # Landmarkтарды дайындау
-                serializable_landmarks = {
-                    'hand_0': [{'x': p.get('x', 0), 'y': p.get('y', 0)} for p in landmarks.get('hand_0', [])],
-                    'hand_1': [{'x': p.get('x', 0), 'y': p.get('y', 0)} for p in landmarks.get('hand_1', [])],
-                    'hand_labels': landmarks.get('hand_labels', []),
-                    'pose': [{'x': p.get('x', 0), 'y': p.get('y', 0)} for p in landmarks.get('pose', [])[:17]]
-                }
-
+            if predicted_label:
                 return jsonify({
                     'status': 'success',
                     'current_prediction': predicted_label,
                     'top3': [{'label': l, 'confidence': float(c)} for l, c in top3] if top3 else [],
                     'landmarks': serializable_landmarks,
-                    'frame_buffer': frame_buffer_len,
-                    'feature_buffer': feature_buffer_len,
+                    'buffer_status': {
+                        'frames': buffer_len,
+                        'needed': recognizer.sequence_length
+                    }
                 })
-
             else:
-                # Төмен confidence
                 return jsonify({
-                    'status': 'low_confidence',
+                    'status': 'waiting',
                     'current_prediction': None,
                     'top3': [{'label': l, 'confidence': float(c)} for l, c in top3] if top3 else [],
-                    'message': 'Low confidence prediction'
+                    'landmarks': serializable_landmarks,
+                    'message': 'Low confidence prediction',
+                    'buffer_status': {
+                        'frames': buffer_len,
+                        'needed': recognizer.sequence_length
+                    }
                 })
 
         # Әлі жинап жатсақ
-        total_frames = frame_buffer_len + (feature_buffer_len * recognizer.window_size)
-        needed_frames = recognizer.window_size * recognizer.sequence_length
-
         return jsonify({
             'status': 'waiting',
-            'message': f'Collecting: {feature_buffer_len}/{recognizer.sequence_length} windows',
-            'frame_buffer': frame_buffer_len,
-            'feature_buffer': feature_buffer_len,
-            'total_frames': total_frames,
-            'needed_frames': needed_frames,
+            'message': f'Collecting frames: {buffer_len}/{recognizer.sequence_length}',
+            'buffer_status': {
+                'frames': buffer_len,
+                'needed': recognizer.sequence_length
+            },
             'current_prediction': None,
             'top3': []
         })
@@ -154,6 +137,7 @@ def predict_frame():
             'current_prediction': None,
             'top3': []
         }), 500
+
 
 @app.route("/")
 def index():

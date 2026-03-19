@@ -31,7 +31,7 @@ def create_app():
 
     # Import parts of the app
     with app.app_context():
-        from app import routes, models, forms
+        from app import routes, models
 
     return app
 
