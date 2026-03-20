@@ -18,17 +18,17 @@ warnings.filterwarnings("ignore")
 class RealTimeSignLanguageRecognizer:
     def __init__(
             self,
-            model_path="app/model/sign_language_recognition_fixed.keras",
-            scaler_path="app/model/scaler.pkl",
-            label_encoder_path="app/model/label_encoder.pkl",
-            feature_order_path="app/model/feature_order.json",
+            model_path="app/model/sign_language_recognition_225.keras",
+            scaler_path="app/model/scaler_225.pkl",
+            label_encoder_path="app/model/label_encoder_225.pkl",
+            feature_order_path="app/model/feature_order_225.json",
             cam_id=None,
     ):
         print("=" * 60)
-        print("Initializing RealTimeSignLanguageRecognizer - FIXED VERSION")
+        print("Initializing RealTimeSignLanguageRecognizer - WLASL100 VERSION")
         print("=" * 60)
 
-        # Модель файлын тексеру
+        # Model file check
         self.model_available = os.path.exists(model_path)
 
         if self.model_available:
@@ -49,7 +49,7 @@ class RealTimeSignLanguageRecognizer:
             self.model = None
             self.expected_sequence_length = 15
 
-        # Scaler жүктеу
+        # Scaler load
         try:
             self.scaler = joblib.load(scaler_path) if os.path.exists(scaler_path) else None
             if self.scaler:
@@ -58,7 +58,7 @@ class RealTimeSignLanguageRecognizer:
             print(f"✗ Scaler load error: {e}")
             self.scaler = None
 
-        # Label encoder жүктеу
+        # Label encoder load
         try:
             self.label_encoder = joblib.load(label_encoder_path) if os.path.exists(label_encoder_path) else None
             if self.label_encoder:
@@ -69,7 +69,7 @@ class RealTimeSignLanguageRecognizer:
             self.label_encoder = None
             self.classes = []
 
-        # Feature order жүктеу
+        # Feature order load
         if os.path.exists(feature_order_path):
             try:
                 with open(feature_order_path, "r") as f:
@@ -77,10 +77,10 @@ class RealTimeSignLanguageRecognizer:
                 print(f"✓ Loaded feature order with {len(self.feature_order)} features")
             except Exception as e:
                 print(f"✗ Feature order load error: {e}")
-                self.feature_order = [f"f_{i}" for i in range(99)]
+                self.feature_order = [f"f_{i}" for i in range(225)]
         else:
-            self.feature_order = [f"f_{i}" for i in range(99)]
-            print(f"Created default feature order with 99 features")
+            self.feature_order = [f"f_{i}" for i in range(225)]
+            print(f"Created default feature order with 225 features")
 
         # MediaPipe setup
         self.mp_hands = mp.solutions.hands
@@ -89,34 +89,43 @@ class RealTimeSignLanguageRecognizer:
         self.hands = None
         self.pose = None
 
-        # === FIXED: REAL-TIME ПАРАМЕТРЛЕРІ (TRAIN-ГЕ СӘЙКЕС) ===
+        # Real-time parameters (MATCHING TRAIN)
         self.fps = 15
-        self.window_size = 1  # FIXED: Әр кадрдан тікелей feature алу
         self.sequence_length = self.expected_sequence_length  # 15
+        self.stride = 3  # Overlap for smoothness
 
-        # === FIXED: ҚАЛПЫНА КЕЛТІРІЛГЕН ПАРАМЕТРЛЕР ===
-        self.confidence_threshold = 0.35  # FIXED: 35% (төмендетілген жоқ)
-        self.smoothing_factor = 0.3  # FIXED: Аздап тегістеу ғана
-        self.voting_window = 5  # FIXED: 5 кадр дауыс беру
+        # Optimized parameters for WLASL100
+        self.confidence_threshold = 0.15  # 15% threshold
+        self.smoothing_factor = 0.3
+        self.voting_window = 5
 
-        # Алдыңғы мәндер (тек визуализация үшін)
+        # Previous values
         self.prev_landmarks = None
+        self.frame_counter = 0
+        self.last_prediction_time = 0
+        self.prediction_cooldown = 0.5  # 500ms cooldown
 
-        # Камера индексін таңдау
+        # Camera selection
         if cam_id is None:
             self.CAM_ID = self.find_working_camera()
         else:
             self.CAM_ID = cam_id
 
-        # === FIXED: BUFFERS - TRAIN-ГЕ СӘЙКЕС ===
-        self.feature_buffer = deque(maxlen=self.sequence_length)  # Тек raw feature-лар
-        self.raw_landmarks_buffer = deque(maxlen=self.sequence_length)  # Визуализация үшін
+        # BUFFERS (MATCHING TRAIN)
+        self.feature_buffer = deque(maxlen=self.sequence_length * 2)
+        self.raw_landmarks_buffer = deque(maxlen=self.sequence_length * 2)
         self.prediction_history = deque(maxlen=self.voting_window)
+
+        # Gesture detection
+        self.gesture_active = False
+        self.current_gesture_start_time = 0
+        self.last_gesture_label = None
 
         # Pose landmarks indices (33 points)
         self.pose_landmarks = list(range(33))
+        self.hand_landmarks = list(range(21))
 
-        # For FPS calculation
+        # FPS calculation
         self.frame_count = 0
         self.fps_timer = cv2.getTickCount()
         self.processing_times = deque(maxlen=30)
@@ -131,13 +140,14 @@ class RealTimeSignLanguageRecognizer:
         self.lock = threading.Lock()
 
         print(f"\n✓ Initialization complete!")
-        print(f"📊 Config: window_size={self.window_size}, sequence_length={self.sequence_length}")
+        print(f"📊 Config: sequence_length={self.sequence_length}, stride={self.stride}")
         print(f"📊 Total frames needed: {self.sequence_length} frames")
         print(f"📊 Time needed: {self.sequence_length / self.fps:.1f} seconds")
+        print(f"📊 Features: 225 (33 pose + 21 left hand + 21 right hand)")
         print("=" * 60)
 
     def find_working_camera(self, max_check=5):
-        """Жұмыс істейтін камераны табу"""
+        """Find working camera"""
         print("\n🔍 Looking for working cameras...")
         for i in range(max_check):
             try:
@@ -155,12 +165,12 @@ class RealTimeSignLanguageRecognizer:
         return 0
 
     def _init_mediapipe(self):
-        """Initialize MediaPipe models"""
+        """Initialize MediaPipe models with optimized settings for WLASL100"""
         if self.hands is None:
             self.hands = self.mp_hands.Hands(
                 static_image_mode=False,
                 max_num_hands=2,
-                min_detection_confidence=0.5,
+                min_detection_confidence=0.5,  # Higher for better detection
                 min_tracking_confidence=0.5
             )
         if self.pose is None:
@@ -197,10 +207,8 @@ class RealTimeSignLanguageRecognizer:
                 self.cap.set(cv2.CAP_PROP_FPS, 30)
 
             self._init_mediapipe()
-            self.feature_buffer.clear()
-            self.raw_landmarks_buffer.clear()
-            self.prediction_history.clear()
-            self.prev_landmarks = None
+            self.reset_buffers()
+            self.gesture_active = False
             self.is_running = True
             print(f"✓ Camera started successfully")
             return True
@@ -219,10 +227,18 @@ class RealTimeSignLanguageRecognizer:
             self.current_prediction = None
             self.top3_predictions = None
 
+    def reset_buffers(self):
+        """Reset all buffers for new gesture"""
+        self.feature_buffer.clear()
+        self.raw_landmarks_buffer.clear()
+        self.prediction_history.clear()
+        self.frame_counter = 0
+        print("🔄 Buffers reset")
+
     def extract_landmarks_from_frame(self, frame):
-        """FIXED: Extract ONLY POSE landmarks - NO FILTERING"""
+        """Extract POSE + HANDS landmarks (225 features total)"""
         if self.hands is None or self.pose is None:
-            return {"pose": []}, None, None
+            return {"hand_0": [], "hand_1": [], "hand_labels": [], "pose": []}, None, None
 
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         pose_results = self.pose.process(frame_rgb)
@@ -235,7 +251,7 @@ class RealTimeSignLanguageRecognizer:
             "pose": [],
         }
 
-        # FIXED: Extract POSE landmarks (33 points) - NO VISIBILITY FILTER
+        # Extract POSE landmarks (33 points)
         if pose_results.pose_landmarks:
             for idx in range(33):
                 lm = pose_results.pose_landmarks.landmark[idx]
@@ -249,7 +265,7 @@ class RealTimeSignLanguageRecognizer:
             for _ in range(33):
                 landmarks["pose"].append({"x": 0.0, "y": 0.0, "z": 0.0})
 
-        # Extract HAND landmarks (for visualization only)
+        # Extract HAND landmarks (21 points each hand)
         if hands_results.multi_hand_landmarks:
             for hand_idx, hand_landmarks in enumerate(hands_results.multi_hand_landmarks):
                 if hand_idx > 1:
@@ -257,48 +273,69 @@ class RealTimeSignLanguageRecognizer:
                 label = hands_results.multi_handedness[hand_idx].classification[0].label
                 landmarks["hand_labels"].append(label)
                 for lm in hand_landmarks.landmark:
-                    landmarks[f"hand_{hand_idx}"].append({"x": lm.x, "y": lm.y, "z": lm.z})
+                    landmarks[f"hand_{hand_idx}"].append({
+                        "x": lm.x,
+                        "y": lm.y,
+                        "z": lm.z
+                    })
+
+        # Ensure both hands have 21 points (pad with zeros if needed)
+        for hand_key in ["hand_0", "hand_1"]:
+            while len(landmarks[hand_key]) < 21:
+                landmarks[hand_key].append({"x": 0.0, "y": 0.0, "z": 0.0})
 
         return landmarks, hands_results, pose_results
 
-    # FIXED: REMOVED all complex feature extraction
     def extract_raw_features(self, landmarks):
-        """FIXED: Extract raw 99 features (33 landmarks * 3 coordinates)"""
+        """Extract 225 features: 33 pose + 21 left hand + 21 right hand"""
         features = []
 
-        # Get the most recent pose landmarks
-        pose = landmarks["pose"]
-
-        # Extract x, y, z for all 33 pose landmarks
+        # 1. POSE landmarks (33 points × 3 = 99 features)
         for landmark_idx in range(33):
-            if landmark_idx < len(pose):
-                lm = pose[landmark_idx]
-                features.append(lm["x"])
-                features.append(lm["y"])
-                features.append(lm["z"])
+            if landmark_idx < len(landmarks["pose"]):
+                lm = landmarks["pose"][landmark_idx]
+                features.extend([lm["x"], lm["y"], lm["z"]])
             else:
                 features.extend([0.0, 0.0, 0.0])
 
-        return np.array(features)
+        # 2. LEFT HAND landmarks (21 points × 3 = 63 features)
+        for landmark_idx in range(21):
+            if landmark_idx < len(landmarks.get("hand_0", [])):
+                lm = landmarks["hand_0"][landmark_idx]
+                features.extend([lm["x"], lm["y"], lm["z"]])
+            else:
+                features.extend([0.0, 0.0, 0.0])
+
+        # 3. RIGHT HAND landmarks (21 points × 3 = 63 features)
+        for landmark_idx in range(21):
+            if landmark_idx < len(landmarks.get("hand_1", [])):
+                lm = landmarks["hand_1"][landmark_idx]
+                features.extend([lm["x"], lm["y"], lm["z"]])
+            else:
+                features.extend([0.0, 0.0, 0.0])
+
+        return np.array(features, dtype=np.float32)
 
     def predict(self):
-        """FIXED: Simple prediction - just like training"""
+        """Make prediction with train-like overlap logic"""
         if not self.model_available or self.model is None:
             return None, None
 
+        # Need at least sequence_length frames
         if len(self.feature_buffer) < self.sequence_length:
             return None, None
 
         try:
-            # Prepare data - exactly like training
-            X = np.array(list(self.feature_buffer))
-            X = X.reshape(1, self.sequence_length, 99)
+            # Get the most recent sequence_length frames
+            recent_frames = list(self.feature_buffer)[-self.sequence_length:]
+            X = np.array(recent_frames)
+            X = X.reshape(1, self.sequence_length, 225)
 
             # Scale if scaler available
             if self.scaler:
-                X_reshaped = X.reshape(-1, 99)
+                X_reshaped = X.reshape(-1, 225)
                 X_scaled = self.scaler.transform(X_reshaped)
-                X = X_scaled.reshape(1, self.sequence_length, 99)
+                X = X_scaled.reshape(1, self.sequence_length, 225)
 
             # Predict
             predictions = self.model.predict(X, verbose=0)[0]
@@ -320,7 +357,7 @@ class RealTimeSignLanguageRecognizer:
             # Add to history for voting
             self.prediction_history.append(current_pred)
 
-            # FIXED: Simple voting
+            # Simple voting for stability
             if len(self.prediction_history) >= 3:
                 from collections import Counter
                 counter = Counter(self.prediction_history)
@@ -337,10 +374,10 @@ class RealTimeSignLanguageRecognizer:
             # Prepare top3 list
             top3_list = list(zip(top3_labels, top3_confidences * 100))
 
-            if predicted_label:
-                print(f"🎯 Final prediction: {predicted_label} ({current_conf * 100:.1f}%)")
-            else:
-                print(f"⏳ Low confidence: {current_conf * 100:.1f}%")
+            # Reset buffer after successful prediction (new gesture)
+            if predicted_label and predicted_label != self.last_gesture_label:
+                print(f"🎯 New gesture detected: {predicted_label} ({current_conf * 100:.1f}%)")
+                self.last_gesture_label = predicted_label
 
             return predicted_label, top3_list
 
@@ -374,26 +411,28 @@ class RealTimeSignLanguageRecognizer:
         return frame
 
     def process_frame(self, frame):
-        """FIXED: Process a single frame - SIMPLE and FAST"""
+        """Process a single frame - OPTIMIZED for real-time"""
         if not self.is_running:
             return frame
 
-        # Extract landmarks
+        # Extract landmarks (pose + hands)
         landmarks, hands_results, pose_results = self.extract_landmarks_from_frame(frame)
 
         # Store raw landmarks for visualization
         self.raw_landmarks_buffer.append(landmarks)
 
-        # FIXED: Extract raw features directly
+        # Extract features and add to buffer
         features = self.extract_raw_features(landmarks)
         self.feature_buffer.append(features)
+        self.frame_counter += 1
 
-        # FIXED: Make prediction when buffer is full
-        if len(self.feature_buffer) == self.sequence_length:
-            pred, top3 = self.predict()
-            with self.lock:
-                self.current_prediction = pred
-                self.top3_predictions = top3
+        # Make prediction at stride intervals
+        if len(self.feature_buffer) >= self.sequence_length:
+            if self.frame_counter % self.stride == 0:
+                pred, top3 = self.predict()
+                with self.lock:
+                    self.current_prediction = pred
+                    self.top3_predictions = top3
 
         # Draw landmarks
         frame = self.draw_landmarks(frame, hands_results, pose_results)
@@ -413,8 +452,8 @@ class RealTimeSignLanguageRecognizer:
         # Show current prediction
         with self.lock:
             if self.current_prediction:
-                cv2.putText(frame, f"Pred: {self.current_prediction}", (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
-                            (0, 0, 255), 2)
+                cv2.putText(frame, f"Pred: {self.current_prediction}", (10, 90),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
         return frame
 
@@ -422,13 +461,15 @@ class RealTimeSignLanguageRecognizer:
         """Get processed frame for streaming"""
         if not self.is_running:
             placeholder = np.zeros((480, 640, 3), dtype=np.uint8)
-            cv2.putText(placeholder, "Camera Stopped", (200, 240), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+            cv2.putText(placeholder, "Camera Stopped", (200, 240),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
             return placeholder
 
         if not self.cap or not self.cap.isOpened():
             if not self.start_capture():
                 error_frame = np.zeros((480, 640, 3), dtype=np.uint8)
-                cv2.putText(error_frame, "Camera Error", (220, 240), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                cv2.putText(error_frame, "Camera Error", (220, 240),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
                 return error_frame
 
         ret, frame = self.cap.read()

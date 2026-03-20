@@ -1,4 +1,3 @@
-
 import os
 from datetime import datetime
 
@@ -15,7 +14,7 @@ from celery.result import AsyncResult
 import cv2
 
 from app import db
-from app.models import Video, FrameLandmark  # DB Models
+from app.models import Video, FrameLandmark
 from app.tasks import process_video_landmarks, celery
 from app.config import VIDEO_DIR
 from app.utils.real_time_recognition import get_recognizer
@@ -24,13 +23,13 @@ import numpy as np
 
 @app.route('/predict_frame', methods=['POST'])
 def predict_frame():
-    """FIXED: React Native-тен келген бір кадрды өңдеу"""
+    """FIXED: React Native frame processing with 225 features"""
     print("\n" + "=" * 60)
-    print("🔵 PREDICT_FRAME called - FIXED VERSION")
+    print("🔵 PREDICT_FRAME called - WLASL100 VERSION")
     print("=" * 60)
 
     try:
-        # === ФАЙЛДЫ АЛУ ===
+        # Get file from request
         if 'image' in request.files:
             file = request.files['image']
             print("✅ Using 'image' field")
@@ -44,7 +43,7 @@ def predict_frame():
                 'message': 'No image or frame provided'
             }), 400
 
-        # Файлды оқу
+        # Read and decode image
         img_bytes = file.read()
         nparr = np.frombuffer(img_bytes, np.uint8)
         frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
@@ -52,46 +51,63 @@ def predict_frame():
         if frame is None:
             return jsonify({'status': 'error', 'message': 'Invalid image'}), 400
 
-        # Recognizer алу
+        # Get recognizer
         recognizer = get_recognizer()
         if recognizer is None:
             return jsonify({'status': 'error', 'message': 'Recognizer not initialized'}), 500
 
-        # Landmarkтарды алу
+        # Extract landmarks (pose + hands)
         landmarks, hands_results, pose_results = recognizer.extract_landmarks_from_frame(frame)
 
-        # Pose бар ма?
-        if len(landmarks["pose"]) == 0:
+        # Check if pose detected
+        has_pose = len(landmarks["pose"]) > 0 and any(
+            lm["x"] != 0 or lm["y"] != 0 or lm["z"] != 0 for lm in landmarks["pose"]
+        )
+
+        # Check if hands detected
+        has_hands = len(landmarks["hand_0"]) > 0 or len(landmarks["hand_1"]) > 0
+
+        if not has_pose:
             print("⚠ No pose detected")
             return jsonify({
                 'status': 'waiting',
                 'message': 'No pose detected',
                 'current_prediction': None,
-                'top3': []
+                'top3': [],
+                'landmarks_detected': {
+                    'pose': False,
+                    'hands': has_hands
+                }
             })
 
-        # FIXED: EXTRACT RAW FEATURES DIRECTLY
+        # Extract features (225 features)
         features = recognizer.extract_raw_features(landmarks)
         recognizer.feature_buffer.append(features)
 
         # Buffer status
         buffer_len = len(recognizer.feature_buffer)
 
-        # FIXED: Predict when buffer is full
+        # Prepare landmarks for React Native
+        serializable_landmarks = {
+            'hand_0': [{'x': p.get('x', 0), 'y': p.get('y', 0), 'z': p.get('z', 0)}
+                       for p in landmarks.get('hand_0', [])[:21]],
+            'hand_1': [{'x': p.get('x', 0), 'y': p.get('y', 0), 'z': p.get('z', 0)}
+                       for p in landmarks.get('hand_1', [])[:21]],
+            'hand_labels': landmarks.get('hand_labels', []),
+            'pose': [{'x': p.get('x', 0), 'y': p.get('y', 0), 'z': p.get('z', 0)}
+                     for p in landmarks.get('pose', [])[:33]]
+        }
+
+        # Predict when buffer is full
         if buffer_len >= recognizer.sequence_length:
             print(f"✅ Buffer full! Predicting with {buffer_len} frames...")
+            print(f"📊 Features shape: {features.shape}")
+            print(f"📊 Buffer size: {len(recognizer.feature_buffer)}")
 
             predicted_label, top3 = recognizer.predict()
 
-            # Landmarkтарды дайындау (React Native үшін)
-            serializable_landmarks = {
-                'hand_0': [{'x': p.get('x', 0), 'y': p.get('y', 0)} for p in landmarks.get('hand_0', [])],
-                'hand_1': [{'x': p.get('x', 0), 'y': p.get('y', 0)} for p in landmarks.get('hand_1', [])],
-                'hand_labels': landmarks.get('hand_labels', []),
-                'pose': [{'x': p.get('x', 0), 'y': p.get('y', 0)} for p in landmarks.get('pose', [])[:17]]
-            }
-
             if predicted_label:
+                print(f"🎯 PREDICTION: {predicted_label}")
                 return jsonify({
                     'status': 'success',
                     'current_prediction': predicted_label,
@@ -100,6 +116,10 @@ def predict_frame():
                     'buffer_status': {
                         'frames': buffer_len,
                         'needed': recognizer.sequence_length
+                    },
+                    'landmarks_detected': {
+                        'pose': has_pose,
+                        'hands': has_hands
                     }
                 })
             else:
@@ -112,10 +132,14 @@ def predict_frame():
                     'buffer_status': {
                         'frames': buffer_len,
                         'needed': recognizer.sequence_length
+                    },
+                    'landmarks_detected': {
+                        'pose': has_pose,
+                        'hands': has_hands
                     }
                 })
 
-        # Әлі жинап жатсақ
+        # Still collecting frames
         return jsonify({
             'status': 'waiting',
             'message': f'Collecting frames: {buffer_len}/{recognizer.sequence_length}',
@@ -124,7 +148,12 @@ def predict_frame():
                 'needed': recognizer.sequence_length
             },
             'current_prediction': None,
-            'top3': []
+            'top3': [],
+            'landmarks': serializable_landmarks,
+            'landmarks_detected': {
+                'pose': has_pose,
+                'hands': has_hands
+            }
         })
 
     except Exception as e:
@@ -152,8 +181,7 @@ def generate_frames():
     while True:
         frame = recognizer.get_frame()
         if frame is None:
-            # Send a black frame if no frame available
-            frame = recognizer.get_frame()  # Will return placeholder
+            frame = recognizer.get_frame()
 
         # Encode frame as JPEG
         ret, buffer = cv2.imencode('.jpg', frame)
@@ -163,81 +191,6 @@ def generate_frames():
         frame_bytes = buffer.tobytes()
         yield (b'--frame\r\n'
                b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
-
-
-
-@app.route('/cameras', methods=['GET'])
-def list_cameras():
-    """Қолжетімді камералар тізімін қайтару"""
-    recognizer = get_recognizer()
-    cameras = recognizer.get_available_cameras()
-    return jsonify({
-        'status': 'success',
-        'cameras': cameras,
-        'current_camera': recognizer.CAM_ID
-    })
-
-
-@app.route('/camera/set', methods=['POST'])
-def set_camera():
-    """Камера индексін өзгерту"""
-    data = request.get_json() or {}
-    cam_id = data.get('cam_id')
-
-    if cam_id is None:
-        return jsonify({'status': 'error', 'message': 'cam_id required'}), 400
-
-    recognizer = get_recognizer()
-
-    # Егер тану жұмыс істеп тұрса, тоқтату
-    was_running = recognizer.is_running
-    if was_running:
-        recognizer.stop_capture()
-
-    # Камераны өзгерту
-    success = recognizer.set_camera_index(cam_id)
-
-    if not success:
-        return jsonify({
-            'status': 'error',
-            'message': f'Camera {cam_id} is not available'
-        }), 400
-
-    # Егер бұрын жұмыс істеп тұрса, қайта бастау
-    if was_running:
-        recognizer.start_capture()
-
-    return jsonify({
-        'status': 'success',
-        'cam_id': cam_id,
-        'message': f'Camera set to index {cam_id}'
-    })
-
-
-@app.route('/camera/test/<int:cam_id>', methods=['GET'])
-def test_camera(cam_id):
-    """Бір камераны тексеру"""
-    cap = cv2.VideoCapture(cam_id)
-    if not cap.isOpened():
-        return jsonify({
-            'status': 'error',
-            'message': f'Camera {cam_id} cannot be opened'
-        })
-
-    ret, frame = cap.read()
-    cap.release()
-
-    if ret and frame is not None:
-        return jsonify({
-            'status': 'success',
-            'cam_id': cam_id,
-            'frame_size': frame.shape
-        })
-    else:
-        return jsonify({
-            'status': 'error',
-            'message': f'Camera {cam_id} opened but cannot read frame'
-        })
 
 
 @app.route('/video_feed')
@@ -295,12 +248,20 @@ def recognition_status():
     })
 
 
-# --- Helper for saving videos to DB and filesystem ---
+@app.route('/reset_buffer', methods=['POST'])
+def reset_buffer():
+    """Reset buffer for new gesture"""
+    recognizer = get_recognizer()
+    recognizer.reset_buffers()
+    return jsonify({
+        'status': 'success',
+        'message': 'Buffer reset successfully'
+    })
+
+
+# --- Video management routes (unchanged) ---
 def _save_video_file(label, video_file):
-    """
-    Saves uploaded video to disk and creates a Video record in the database.
-    Returns the Video instance.
-    """
+    """Saves uploaded video to disk and creates a Video record"""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     save_dir = os.path.join(VIDEO_DIR, label)
     os.makedirs(save_dir, exist_ok=True)
@@ -316,10 +277,6 @@ def _save_video_file(label, video_file):
 
 @app.route("/record", methods=["GET"])
 def record_page():
-    """
-    Renders the record page, pulling video entries directly from the database
-    to include id, label, filename, and URL without extra filesystem queries.
-    """
     videos = Video.query.order_by(Video.id.desc()).all()
     video_list = []
     for v in videos:
@@ -342,9 +299,6 @@ def import_page():
 
 @app.route("/import", methods=["POST"])
 def import_video():
-    """
-    Handles external video upload and kicks off landmark+feature extraction.
-    """
     label = request.form.get("label", "").strip()
     if not label:
         return jsonify({"status": "error", "message": "Label is required."}), 400
@@ -353,14 +307,11 @@ def import_video():
     if not video_file:
         return jsonify({"status": "error", "message": "No video file uploaded."}), 400
 
-    # reuse helper to save file & DB record
     video = _save_video_file(label, video_file)
 
-    # video path
     rel_path = os.path.relpath(video.path, os.path.join(app.root_path, "videos"))
     video_url = url_for("serve_video", filename=rel_path)
 
-    # mirror setting
     mirror = request.form.get("mirror", "true").lower() == "true"
     task = process_video_landmarks.apply_async(
         args=[video.id], kwargs={"mirror": mirror}
@@ -402,18 +353,13 @@ def save_video():
     )
 
 
-# for submission of video files
 @app.route("/videos/<path:filename>")
 def serve_video(filename):
-    # 'videos' klasörünü uygulamanın root klasörü altında varsayılıyor
     return send_from_directory(os.path.join(app.root_path, "videos"), filename)
 
 
 @app.route("/gallery", methods=["GET"])
 def gallery():
-    """
-    Renders the gallery page using the same DB-driven list as record_page for consistency.
-    """
     videos = Video.query.order_by(Video.id.desc()).all()
     video_list = []
     for v in videos:
@@ -431,13 +377,8 @@ def gallery():
 
 @app.route("/process_video", methods=["POST"])
 def process_video():
-    """
-    AJAX ile çağrılan endpoint: video_id alıp arka planda Celery task'ını başlatır.
-    """
     video_id = request.form.get("video_id", type=int)
-    # get mirror value from form (default: true)
     mirror = request.form.get("mirror", "true").lower() == "true"
-    # get start_time and end_time from form
     start_time = request.form.get("start_time", type=float, default=0.0)
     end_time = request.form.get("end_time", type=float, default=0.0)
 
@@ -458,8 +399,6 @@ def process_video():
     if not video:
         return jsonify({"status": "error", "message": "Video not found."}), 404
 
-    # start the Celery task and send video_id and mirror value
-    # to the task
     task = process_video_landmarks.apply_async(
         args=[video_id],
         kwargs={
@@ -482,7 +421,6 @@ def task_status(task_id):
     task = AsyncResult(task_id, app=celery)
 
     if task.state == "PENDING":
-        # Görev henüz başlatılmamış veya sonuç kaydı yok
         response = {
             "state": task.state,
             "current": 0,
@@ -490,7 +428,6 @@ def task_status(task_id):
             "status": "Pending...",
         }
     elif task.state == "PROGRESS":
-        # PROGRESS durumunda, görev ilerleme verisi (current, total) içerir
         response = {
             "state": task.state,
             "current": task.info.get("current", 0),
@@ -505,7 +442,6 @@ def task_status(task_id):
             "status": "Completed",
         }
     else:
-        # FAILURE veya başka bir durum
         response = {
             "state": task.state,
             "current": 0,
@@ -516,21 +452,18 @@ def task_status(task_id):
     return jsonify(response)
 
 
-# DELETE endpoint: remove video file and related DB records
 @app.route("/delete_video/<int:video_id>", methods=["DELETE"])
 def delete_video(video_id):
     video = Video.query.get(video_id)
     if not video:
         return jsonify({"status": "error", "message": "Video not found."}), 404
 
-    # 1. Delete file from disk
     try:
         if os.path.exists(video.path):
             os.remove(video.path)
     except Exception as e:
         return jsonify({"status": "error", "message": f"File delete error: {e}"}), 500
 
-    # 2. Delete related landmarks
     try:
         FrameLandmark.query.filter_by(video_id=video_id).delete()
         db.session.commit()
@@ -540,7 +473,6 @@ def delete_video(video_id):
             {"status": "error", "message": f"Database delete error: {e}"}
         ), 500
 
-    # 3. Delete Video record
     try:
         db.session.delete(video)
         db.session.commit()
@@ -555,7 +487,6 @@ def delete_video(video_id):
     )
 
 
-# EDIT endpoint: update label and re-extract landmarks/features
 @app.route("/edit_video", methods=["POST"])
 def edit_video():
     data = request.get_json() or {}
@@ -565,7 +496,6 @@ def edit_video():
     end_time = data.get("end_time", 0.0)
     mirror = data.get("mirror", True)
 
-    # basic validation
     if not video_id or new_label == "":
         return jsonify(
             {"status": "error", "message": "video_id and non-empty label required."}
@@ -577,15 +507,12 @@ def edit_video():
     if not video:
         return jsonify({"status": "error", "message": "Video not found."}), 404
 
-    # 1. Update label
     video.label = new_label
     db.session.commit()
 
-    # 2. Remove old FrameLandmark entries
     FrameLandmark.query.filter_by(video_id=video_id).delete()
     db.session.commit()
 
-    # 3. Trigger Celery task for fresh extraction
     task = process_video_landmarks.apply_async(
         args=[video_id],
         kwargs={"mirror": mirror, "start_time": start_time, "end_time": end_time},
